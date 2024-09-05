@@ -6,7 +6,10 @@ import { uuid } from 'utils/common';
 import { BrunoError } from 'utils/common/error';
 import { validateSchema, transformItemsInCollection, hydrateSeqInCollection } from './common';
 
-const readFile = (files) => {
+// change this to true to adapt the import for external services
+const IS_EXTERNAL_SERVICES = false
+
+const readFile = (file) => {
   return new Promise((resolve, reject) => {
     const fileReader = new FileReader();
     fileReader.onload = (e) => {
@@ -26,7 +29,7 @@ const readFile = (files) => {
       }
     };
     fileReader.onerror = (err) => reject(err);
-    fileReader.readAsText(files[0]);
+    fileReader.readAsText(file);
   });
 };
 
@@ -53,10 +56,10 @@ const buildEmptyJsonBody = (bodySchema) => {
 const transformOpenapiRequestItem = (request) => {
   let _operationObject = request.operationObject;
 
-  let operationName = _operationObject.summary || _operationObject.operationId || _operationObject.description;
-  if (!operationName) {
-    operationName = `${request.method} ${request.path}`;
-  }
+  // let operationName = _operationObject.summary || _operationObject.operationId || _operationObject.description;
+  // if (!operationName) {
+  const operationName = `${request.method} ${request.path}`;
+  // }
 
   // replace OpenAPI links in path by Bruno variables
   let path = request.path.replace(/{([a-zA-Z]+)}/g, `{{${_operationObject.operationId}_$1}}`);
@@ -69,7 +72,7 @@ const transformOpenapiRequestItem = (request) => {
       url: ensureUrl(request.global.server + path),
       method: request.method.toUpperCase(),
       auth: {
-        mode: 'none',
+        mode: 'inherit',
         basic: null,
         bearer: null,
         digest: null
@@ -142,20 +145,20 @@ const transformOpenapiRequestItem = (request) => {
         token: '{{token}}'
       };
     } else if (auth.type === 'apiKey' && auth.in === 'header') {
-      brunoRequestItem.request.headers.push({
-        uid: uuid(),
-        name: auth.name,
-        value: '{{apiKey}}',
-        description: 'Authentication header',
-        enabled: true
-      });
+      // brunoRequestItem.request.headers.push({
+      //   uid: uuid(),
+      //   name: auth.name,
+      //   value: '{{apiKey}}',
+      //   description: 'Authentication header',
+      //   enabled: true
+      // });
     }
   }
 
   // TODO: handle allOf/anyOf/oneOf
   if (_operationObject.requestBody) {
     let content = get(_operationObject, 'requestBody.content', {});
-    let mimeType = Object.keys(content)[0];
+    let mimeType = Object.keys(content).find((key) => key !== 'application/ld+json');
     let body = content[mimeType] || {};
     let bodySchema = body.schema;
     if (mimeType === 'application/json') {
@@ -297,8 +300,10 @@ const groupRequestsByTags = (requests) => {
   return [groups, ungrouped];
 };
 
-const getDefaultUrl = (serverObject) => {
+const getDefaultUrl = (serverObject, title) => {
   let url = serverObject.url;
+  const name = title.toLowerCase().replace(/\s/g, '-');
+  if (url === '/') return `{{baseUrl-${name}}}`;
   if (serverObject.variables) {
     each(serverObject.variables, (variable, variableName) => {
       let sub = variable.default || (variable.enum ? variable.enum[0] : `{{${variableName}}}`);
@@ -368,10 +373,16 @@ const parseOpenApiCollection = (data) => {
         return;
       }
 
-      // TODO what if info.title not defined?
-      brunoCollection.name = collectionData.info.title;
+      let name = collectionData.info.title
+      // harmonize external services name
+      if(IS_EXTERNAL_SERVICES && !/ service$/i.test(name)) {
+        name += ' Service'
+      }
+      brunoCollection.name = name;
       let servers = collectionData.servers || [];
-      let baseUrl = servers[0] ? getDefaultUrl(servers[0]) : '';
+      let baseUrl = servers[0]
+        ? getDefaultUrl(servers[0], brunoCollection.name)
+        : getDefaultUrl({ url: '/' }, brunoCollection.name);
       let securityConfig = getSecurity(collectionData);
 
       let allRequests = Object.entries(collectionData.paths)
@@ -417,20 +428,44 @@ const parseOpenApiCollection = (data) => {
   });
 };
 
-const importCollection = () => {
-  return new Promise((resolve, reject) => {
-    fileDialog({ accept: '.json, .yaml, .yml, application/json, application/yaml, application/x-yaml' })
-      .then(readFile)
+const importCollection = (file) => {
+  return readFile(file)
       .then(parseOpenApiCollection)
       .then(transformItemsInCollection)
       .then(hydrateSeqInCollection)
       .then(validateSchema)
-      .then((collection) => resolve({ collection }))
       .catch((err) => {
         console.error(err);
-        reject(new BrunoError('Import collection failed: ' + err.message));
+        throw new BrunoError('Import collection failed: ' + err.message);
       });
-  });
 };
 
-export default importCollection;
+const importCollections = async () => {
+  const files = await fileDialog({
+    accept: '.json, .yaml, .yml, application/json, application/yaml, application/x-yaml',
+    multiple: true
+  });
+  const collections = await Promise.all(Array.from(files).map(importCollection));
+  const brunoCollection = {
+    name: IS_EXTERNAL_SERVICES ? 'External-services' : '2Cloud-services',
+    uid: uuid(),
+    version: '1',
+    items: [],
+    environments: []
+  };
+
+  collections.forEach(({ uid, name, items }, index) => {
+    brunoCollection.items.push({
+      uid,
+      type: 'folder',
+      seq: index,
+      name,
+      items,
+      filename: null,
+      pathname: null
+    });
+  });
+  return { collection: brunoCollection };
+};
+
+export default importCollections;
