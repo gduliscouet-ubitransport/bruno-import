@@ -375,7 +375,7 @@ const parseOpenApiCollection = (data) => {
 
       let name = collectionData.info.title
       // harmonize external services name
-      if(IS_EXTERNAL_SERVICES && !/ service$/i.test(name)) {
+      if(IS_EXTERNAL_SERVICES && !/(\s|-)service$/i.test(name)) {
         name += ' Service'
       }
       brunoCollection.name = name;
